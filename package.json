@@ -1,0 +1,35 @@
+{
+  "name": "flow",
+  "version": "10.0.0",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/totaljs/flow"
+  },
+  "dependencies": {
+    "aedes": "^0.48.1",
+    "cheerio": "^1.0.0-rc.12",
+    "concurrently": "^7.6.0",
+    "mqtt": "^4.3.7",
+    "nodemon": "^2.0.20",
+    "socket.io": "^4.5.4",
+    "total4": "latest",
+    "websocket-stream": "^5.5.2",
+    "ws": "^8.12.0"
+  },
+  "scripts": {
+    "ws": "node ws-server.js",
+    "start": "concurrently \"node index.js 8000\" \"nodemon broker.js\""
+  },
+  "keywords": [
+    "flow",
+    "flowstream",
+    "iot"
+  ],
+  "author": "Total.js",
+  "contributors": [
+    "Peter Širka",
+    "Martin Smola"
+  ],
+  "license": "MIT"
+}

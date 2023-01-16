@@ -1,0 +1,316 @@
+<script total>
+  exports.name = "MQTT Broker";
+  exports.icon = "fa fa-exchange-alt";
+  exports.group = "MQTT";
+  exports.config = {
+    host: "localhost",
+    port: 1884,
+    portws: 8884,
+    secure: false,
+  };
+  exports.outputs = [{ id: "output", name: "Messages" }];
+  exports.author = "Martin Smola";
+  exports.version = "3";
+  exports.npm = ["mqtt"];
+  exports.flags = ["mqttbroker"];
+
+  exports.make = function (instance, config) {
+    const mqtt = require("mqtt");
+    var client;
+    const subscribtions = {};
+    const aedes = require("aedes")();
+    const server = require("net").createServer(aedes.handle);
+    const httpServer = require("http").createServer();
+    const ws = require("websocket-stream");
+    MQTT_Port = 1884;
+    const wsPort = 8884;
+    server.listen(MQTT_Port, function () {
+      console.log("Aedes MQTT server started and listening on port", MQTT_Port);
+    }),
+      ws.createServer({ server: httpServer }, aedes.handle);
+    httpServer.listen(wsPort, function () {
+      console.log("websocket server listening on port ", wsPort);
+    });
+
+    const state = () => {
+      var obj;
+      if (!client) {
+        obj = {
+          connected: false,
+          connecting: false,
+          disconnected: true,
+          disconnnecting: false,
+          status: "disconnected",
+        };
+      } else {
+        const { connected, disconnecting, reconnecting } = client;
+        obj = {
+          connecting: client.stream ? client.stream.connecting : false,
+          connected,
+          disconnecting,
+          reconnecting,
+        };
+        const current = Object.keys(obj).filter((s) => obj[s]);
+        obj.status = current.length ? current[0] : "disconnected";
+      }
+
+      instance.state = {
+        status: obj.status,
+        name: config.host + ":" + config.port,
+        websocket: config.host + ":" + config.portws,
+      };
+      instance.status(instance.state);
+      return obj;
+    };
+
+    instance.configure = function () {
+      disconnect(connect);
+    };
+
+    instance.close = function () {
+      disconnect(notifypubsub);
+    };
+
+    instance.configure();
+
+    function disconnect(callback) {
+      if (!client) return callback && callback();
+
+      if (client.end) client.end(true, cb);
+      else cb();
+
+      function cb() {
+        client.removeAllListeners();
+        client = null;
+        callback && callback();
+      }
+    }
+
+    function connect() {
+      state();
+
+      var broker = config.secure
+        ? "mqtts://"
+        : "mqtt://" + config.host + ":" + config.port;
+      config.name = "[MQTT] " + config.host + ":" + config.port;
+      var opt = CLONE(config);
+      delete opt.auth;
+      client = mqtt.connect(broker, opt);
+
+      client.on("connect", function () {
+        state();
+        notifypubsub();
+      });
+
+      client.on("reconnect", function () {
+        state();
+      });
+
+      client.on("message", function (topic, message) {
+        message = message.toString();
+        if (message[0] === "{" || message[0] === "[")
+          message = message.parseJSON(true);
+
+        onmessage(topic, message);
+      });
+
+      client.on("close", function (err) {
+        console.log(config.name + " close", err);
+        state();
+      });
+
+      client.on("error", function (err) {
+        console.log(config.name + " error", err);
+        state();
+      });
+    }
+
+    function onmessage(topic, message) {
+      let ts = new Date();
+      for (const sub in subscribtions) {
+        var match = mqttWildcard(topic, sub);
+        if (match) {
+          const ids = subscribtions[sub];
+          const len = ids.length;
+          for (let i = 0; i < len; i++) {
+            const com = instance.main.find(ids[i]);
+            com && com.onmessage(topic, message, match, ts);
+          }
+        }
+      }
+      instance.send("output", { topic, message, ts });
+    }
+
+    instance.publish = function (topic, message, options) {
+      var isstring = typeof message === "string";
+      var data = "";
+      if (isstring) data = message;
+      else
+        try {
+          data = JSON.stringify(message);
+        } catch (e) {}
+
+      client &&
+        client.publish(topic, data, options, function (err) {
+          if (err) console.log(config.name + " publish error", err);
+        });
+    };
+
+    instance.subscribe = function (componentid, topic) {
+      var self = this;
+      subscribtions[topic] = subscribtions[topic] || [];
+      if (subscribtions[topic].indexOf(componentid) > -1) return;
+
+      client.subscribe(topic);
+      subscribtions[topic].push(componentid);
+    };
+
+    instance.unsubscribe = function (componentid, topic) {
+      var self = this;
+      var sub = subscribtions[topic];
+      if (sub) {
+        subscribtions[topic] = sub.remove(componentid);
+        client &&
+          client.connected &&
+          !subscribtions[topic].length &&
+          client.unsubscribe(topic);
+      }
+    };
+
+    function notifypubsub() {
+      var instances = instance.main
+        .instances()
+        .filter(
+          (i) =>
+            i.module.flags &&
+            i.module.flags.includes("mqttbroker-dep") > -1 &&
+            i.config.broker === instance.id
+        );
+      for (let com of instances) com.configure();
+    }
+
+    // https://github.com/hobbyquaker/mqtt-wildcard
+    function mqttWildcard(topic, wildcard) {
+      if (topic === wildcard) {
+        return [];
+      } else if (wildcard === "#") {
+        return [topic];
+      }
+
+      var res = [];
+
+      var t = String(topic).split("/");
+      var w = String(wildcard).split("/");
+
+      var i = 0;
+      for (var lt = t.length; i < lt; i++) {
+        if (w[i] === "+") {
+          res.push(t[i]);
+        } else if (w[i] === "#") {
+          res.push(t.slice(i).join("/"));
+          return res;
+        } else if (w[i] !== t[i]) {
+          return null;
+        }
+      }
+
+      if (w[i] === "#") {
+        i += 1;
+      }
+
+      return i === w.length ? res : null;
+    }
+  };
+</script>
+
+<readme> </readme>
+
+<style>
+  .CLASS footer {
+    padding: 10px;
+    font-size: 11px;
+  }
+  .CLASS footer > div > div {
+    height: 16px;
+  }
+  .CLASS footer b {
+    float: right;
+  }
+</style>
+
+<settings>
+  <div class="padding">
+    <div class="row m">
+      <div class="col-md-4">
+        <div data---="input__?.host__placeholder:test.mosquitto.org;required:1">
+          Hostname or IP address
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div data---="input__?.port__type:number;placeholder:1883;required:1">
+          Port
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-md-6">
+        <div data---="input__?.clientid">Client id</div>
+        <div class="help m">
+          Supports variables, example: \`client_{device-id}\`
+        </div>
+        <div data---="checkbox__?.secure" class="m">Secure (ssl)</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-md-6">
+        <div data---="checkbox__?.auth" class="m">Require Authorization</div>
+      </div>
+    </div>
+    <div class="row" data-bind="?.auth__show:value">
+      <div class="col-md-6">
+        <div data---="input__?.username" class="m">Username</div>
+      </div>
+      <div class="col-md-6">
+        <div
+          data---="input__?.password"
+          data-jc-config="type:password"
+          class="m"
+        >
+          Password
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-md-6">
+        <div data---="checkbox__?.lwt" class="m">LWT</div>
+      </div>
+    </div>
+    <div class="row" data-bind="?.lwt__show:value">
+      <div class="col-md-6">
+        <div data---="input__?.lwttopic">Last will topic</div>
+        <div class="help m">
+          Supports variables, example: \`lwt/{device-id}\`
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div data---="input__?.lwtmessage">Last will message</div>
+        <div class="help m">
+          Supports variables, example: \`{device-id} is offline\`
+        </div>
+      </div>
+    </div>
+  </div>
+</settings>
+
+<body>
+  <header><i class="ICON"></i>NAME</header>
+  <footer>
+    <div data-bind="!STATUS__template__show">
+      <script type="text/html">
+        <div><b>{{ value.name }}</b>Name</div>
+        <div><b>{{ value.status }}</b>Status</div>
+        <div><b>{{ value.portws }}</b>Websocket</div>
+      </script>
+    </div>
+  </footer>
+</body>
